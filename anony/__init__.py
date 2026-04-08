@@ -54,9 +54,8 @@ from anony.core.youtube import YouTube
 tg = Telegram()
 yt = YouTube()
 
-from anony.helpers import Queue, Thumbnail
+from anony.helpers import Queue
 queue = Queue()
-thumb = Thumbnail()
 
 from anony.core.calls import TgCall
 anon = TgCall()
@@ -74,6 +73,5 @@ async def stop() -> None:
     await app.exit()
     await userbot.exit()
     await db.close()
-    await thumb.close()
 
     logger.info("Stopped.\n")
