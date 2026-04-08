@@ -1,76 +1,182 @@
-# Copyright (c) 2025 AnonymousX1025
-# Licensed under the MIT License.
-# This file is part of AnonXMusic
-
-
 import os
-import aiohttp
-from PIL import (Image, ImageDraw, ImageEnhance,
-                 ImageFilter, ImageFont, ImageOps)
+from io import BytesIO
+import httpx
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageEnhance,
+    ImageFilter,
+    ImageFont,
+    ImageOps,
+)
 
-from anony import config
+from anony import logger, config
 from anony.helpers import Track
 
 
-class Thumbnail:
-    def __init__(self):
-        self.rect = (914, 514)
-        self.fill = (255, 255, 255)
-        self.mask = Image.new("L", self.rect, 0)
-        self.font1 = ImageFont.truetype("anony/helpers/Raleway-Bold.ttf", 30)
-        self.font2 = ImageFont.truetype("anony/helpers/Inter-Light.ttf", 30)
-        self.session: aiohttp.ClientSession | None = None
+def load_fonts():
+    try:
+        return {
+            "title": ImageFont.truetype("anony/helpers/Raleway-Bold.ttf", 35),
+            "artist": ImageFont.truetype("anony/helpers/Inter-Light.ttf", 28),
+            "small": ImageFont.truetype("anony/helpers/Inter-Light.ttf", 22),
+        }
+    except:
+        return {
+            "title": ImageFont.load_default(),
+            "artist": ImageFont.load_default(),
+            "small": ImageFont.load_default(),
+        }
 
-    async def start(self) -> None:
-        self.session = aiohttp.ClientSession()
-    async def close(self) -> None:
-        await self.session.close()
 
-    async def save_thumb(self, output_path: str, url: str) -> str:
-        async with self.session.get(url) as resp:
-            with open(output_path, "wb") as f: f.write(await resp.read())
-        return output_path
+FONTS = load_fonts()
 
-    async def generate(self, song: Track, size=(1280, 720)) -> str:
+
+async def fetch_image(url: str) -> Image.Image:
+    async with httpx.AsyncClient() as client:
         try:
-            temp = f"cache/temp_{song.id}.jpg"
-            output = f"cache/{song.id}.png"
-            if os.path.exists(output):
-                return output
+            r = await client.get(url, timeout=6)
+            r.raise_for_status()
+            img = Image.open(BytesIO(r.content)).convert("RGBA")
 
-            await self.save_thumb(temp, song.thumbnail)
-            thumb = Image.open(temp).convert("RGBA").resize(
-                size, Image.Resampling.LANCZOS,
+            img = ImageOps.fit(
+                img,
+                (1280, 720),
+                Image.Resampling.LANCZOS
             )
-            blur = thumb.filter(ImageFilter.GaussianBlur(25))
-            image = ImageEnhance.Brightness(blur).enhance(.40)
 
-            _rect = ImageOps.fit(
-                thumb, self.rect,
-                method=Image.LANCZOS, centering=(0.5, 0.5),
+            return img
+
+        except:
+            return Image.new("RGBA", (1280, 720), (25, 18, 18, 255))
+
+
+class Thumbnail:
+    async def generate(self, song: Track) -> str:
+        try:
+            os.makedirs("cache", exist_ok=True)
+            save_path = f"cache/{song.id}_final.png"
+
+            thumb = await fetch_image(song.thumbnail)
+
+            width, height = 1280, 720
+
+            # ===== BACKGROUND =====
+            bg = thumb.copy()
+            bg = bg.filter(ImageFilter.GaussianBlur(18))
+            bg = ImageEnhance.Brightness(bg).enhance(0.60)
+
+            # ===== PANEL FRAME =====
+            panel_margin_x = 260
+            panel_margin_y = 100
+
+            panel_x = panel_margin_x
+            panel_y = panel_margin_y
+
+            panel_w = width - (panel_margin_x * 2)
+            panel_h = height - (panel_margin_y * 2)
+
+            # ===== NATURAL GLASS EFFECT =====
+            panel_area = bg.crop(
+                (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
             )
-            ImageDraw.Draw(self.mask).rounded_rectangle(
-                (0, 0, self.rect[0], self.rect[1]),
-                radius=15,
+
+            panel_area = panel_area.filter(ImageFilter.GaussianBlur(10))
+            panel_area = ImageEnhance.Brightness(panel_area).enhance(0.5)
+
+            mask = Image.new("L", (panel_w, panel_h), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, panel_w, panel_h),
+                radius=35,
                 fill=255,
             )
-            _rect.putalpha(self.mask)
-            image.paste(_rect, (183, 30), _rect)
 
-            draw = ImageDraw.Draw(image)
-            draw.text(
-                xy=(50, 560),
-                text=f"{song.channel_name[:25]} | {song.view_count}",
-                font=self.font2, fill=self.fill,
+            bg.paste(panel_area, (panel_x, panel_y), mask)
+
+            draw = ImageDraw.Draw(bg)
+
+            # ===== COVER =====
+            cover = ImageOps.fit(
+                thumb,
+                (184, 184),
+                Image.Resampling.LANCZOS
             )
-            draw.text((50, 600), song.title[:50], font=self.font1, fill=self.fill)
-            draw.text((40, 650), "0:01", font=self.font1)
-            draw.line([(140, 670), (1160, 670)], fill=self.fill, width=5, joint="curve")
-            draw.text((1185, 650), song.duration, font=self.font1, fill=self.fill)
 
-            image.save(output)
-            try: os.remove(temp)
-            except Exception: pass
-            return output
-        except Exception:
-            config.DEFAULT_THUMB
+            cover_mask = Image.new("L", (184, 184), 0)
+            ImageDraw.Draw(cover_mask).rounded_rectangle(
+                (0, 0, 184, 184),
+                radius=25,
+                fill=255
+            )
+
+            cover.putalpha(cover_mask)
+            bg.paste(cover, (325, 155), cover)
+
+            # ===== SMALL LABEL ABOVE TITLE =====
+            draw.text(
+                (520, 170),
+                "Nancy Music",
+                fill=(200, 200, 200),
+                font=FONTS["small"],
+            )
+
+            # ===== TEXT =====
+            title = (song.title or "Unknown Title")[:45]
+            artist = (song.channel_name or "Unknown Artist")[:40]
+
+            draw.text(
+                (520, 205),
+                title,
+                fill="white",
+                font=FONTS["title"],
+            )
+
+            draw.text(
+                (520, 260),
+                artist,
+                fill=(210, 210, 210),
+                font=FONTS["artist"],
+            )
+
+            # ===== CONTROLS =====
+            try:
+                controls = Image.open("anony/assets/controls.png").convert("RGBA")
+                controls = controls.resize((600, 160), Image.Resampling.LANCZOS)
+
+                bg.paste(
+                    controls,
+                    (335, 415),
+                    controls,
+                )
+            except:
+                pass
+
+            # ===== REMOVE DASH FROM CONTROLS =====
+            erase_x = 880
+            erase_y = 430
+            erase_w = 50
+            erase_h = 25
+
+            patch = bg.crop((erase_x, erase_y, erase_x + erase_w, erase_y + erase_h))
+            patch = patch.filter(ImageFilter.GaussianBlur(30))
+            bg.paste(patch, (erase_x, erase_y))
+
+            # ===== END TIME (RIGHT SIDE ONLY) =====
+            total_time = getattr(song, "duration", "3:25")
+
+            time_y = 427
+            text_width = draw.textlength(total_time, font=FONTS["small"])
+
+            draw.text(
+                (panel_x + panel_w - 100 - text_width, time_y),
+                total_time,
+                fill=(220, 220, 220),
+                font=FONTS["small"],
+            )
+
+            bg.save(save_path, "PNG", quality=95)
+            return save_path
+
+        except Exception as e:
+            logger.warning("Thumbnail generation failed: %s", e)
+            return config.DEFAULT_THUMB
